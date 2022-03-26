@@ -1,0 +1,21 @@
+[package]
+name = "darts-clone"
+version = "0.1.0"
+edition = "2021"
+authors = ["Yunchuan Chen <expnn2ai@gmail.com>"]
+license = "MIT"
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+cxx = "1.0"
+itertools = "0.10.3"
+thiserror = "1.0.30"
+
+[build-dependencies]
+cxx-build = "1.0"
+
+[lib]
+
+[[example]]
+path = 'examples/demo.rs'
+name = 'demo'
