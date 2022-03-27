@@ -71,9 +71,55 @@ pub(crate) mod ffi {
     }
 }
 
+struct DoubleArrayBuffer {
+    ptr: *mut u32,
+    size: usize,
+    capacity: usize,
+    owned: bool,
+}
+
+impl DoubleArrayBuffer {
+    // pub fn new() -> Self {
+    //     DoubleArrayBuffer {ptr: ptr::null_mut(), size: 0, capacity: 0, owned: false}
+    // }
+
+    pub fn to_vec(&self) -> Option<Vec<u32>> {
+        if self.ptr.is_null() || self.size == 0 {
+            None
+        } else {
+            Some((0..self.size)
+                .map(|i| unsafe { *self.ptr.offset(i as isize) })
+                .collect())
+        }
+    }
+}
+
+impl From<Vec<u32>> for DoubleArrayBuffer {
+    fn from(x: Vec<u32>) -> Self {
+        // consumes x and take ownership of x's memory.
+        // the memory will be release in the custom drop() function implemented below.
+        use std::mem::ManuallyDrop;
+
+        // Before we disassemble `x` into its raw parts, make sure it does not get dropped!
+        let mut x = ManuallyDrop::new(x);
+        // Now disassemble `x`. These operations cannot panic, so there cannot be a leak.
+        let (p, s, c) = (x.as_mut_ptr(), x.len(), x.capacity());
+
+        return DoubleArrayBuffer{ptr: p, size: s, capacity: c, owned: true};
+    }
+}
+
+impl Drop for DoubleArrayBuffer {
+    fn drop(&mut self) {
+        if self.owned && !self.ptr.is_null() {
+            unsafe { Vec::from_raw_parts(self.ptr, self.size, self.capacity) };
+        }
+    }
+}
+
 pub struct Datrie {
     intern: cxx::UniquePtr<ffi::DoubleArray>,
-    array_buf: Option<Vec<u32>>,
+    array_buf: Option<DoubleArrayBuffer>,
 }
 
 impl Datrie {
@@ -178,6 +224,9 @@ impl Datrie {
         if status != 0 {
             Err(ErrorKind::UnknownError("build double array trie failed".into()).into())
         } else {
+            let p = unsafe { ffi::get_array(&*self.intern) as *mut u32 };
+            let s = self.intern.size();
+            self.array_buf = Some(DoubleArrayBuffer {ptr: p, size: s, capacity: s, owned: false});
             Ok(())
         }
     }
@@ -200,31 +249,20 @@ impl Datrie {
     }
 
     pub fn set_array(&mut self, array: Vec<u32>) {
+        if array.len() == 0 {
+            unsafe { ffi::set_array(self.intern.pin_mut(), ptr::null(), 0); }
+            self.array_buf = None;
+            return;
+        }
+
         unsafe {
             ffi::set_array(self.intern.pin_mut(), array.as_ptr(), array.len());
         }
-        self.array_buf = Some(array);
+        self.array_buf = Some(array.into());
     }
 
-    pub fn get_array(&mut self) -> Option<&Vec<u32>> {
-        if self.array_buf.is_some() {
-            return self.array_buf.as_ref();
-        }
-
-        let p = unsafe {
-            ffi::get_array(&*self.intern)
-        };
-
-        if p.is_null() {
-            None
-        } else {
-            let siz = self.size();
-            let arr: Vec<_> = (0..siz)
-                .map(|i| unsafe { *p.offset(i as isize) })
-                .collect();
-            self.array_buf = Some(arr);
-            self.array_buf.as_ref()
-        }
+    pub fn get_array(&self) -> Option<Vec<u32>> {
+        self.array_buf.as_ref().map_or(None, |x| x.to_vec())
     }
 
     pub fn load<P: AsRef<Path>>(&mut self, filename: P, offset: Option<usize>, size: Option<usize>)
