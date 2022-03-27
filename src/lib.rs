@@ -1,5 +1,6 @@
 mod error;
 
+use std::borrow::Cow;
 use std::ffi::{CString};
 use std::os::raw::c_char;
 use std::path::Path;
@@ -178,6 +179,23 @@ impl Datrie {
         if status != 0 {
             Err(ErrorKind::UnknownError("build double array trie failed".into()).into())
         } else {
+            // 这样做虽然可以使得 get_array() 快速获取 array 值, 但是会导致双倍的内存占用.
+            // 由于 get_array() 的调用频次不高, 这样做得不偿失.
+            // let siz = self.size();
+            // let p = unsafe {
+            //     ffi::get_array(&*self.intern)
+            // };
+            //
+            // if p.is_null() || siz == 0 {
+            //     None
+            // } else {
+            //     let arr: Vec<_> = (0..siz)
+            //         .map(|i| unsafe { *p.offset(i as isize) })
+            //         .collect();
+            //     self.array_buf = Some(arr);
+            //     self.array_buf.as_ref()
+            // }
+
             Ok(())
         }
     }
@@ -200,15 +218,30 @@ impl Datrie {
     }
 
     pub fn set_array(&mut self, array: Vec<u32>) {
-        unsafe {
-            ffi::set_array(self.intern.pin_mut(), array.as_ptr(), array.len());
+        let arr_len = array.len();
+        let p;
+
+        if arr_len > 0 {
+            p = array.as_ptr();
+            self.array_buf = Some(array);
+        } else {
+            p = ptr::null();
+            self.array_buf = None;
         }
-        self.array_buf = Some(array);
+
+        unsafe {
+            ffi::set_array(self.intern.pin_mut(), p, arr_len);
+        }
     }
 
-    pub fn get_array(&mut self) -> Option<&Vec<u32>> {
+    pub fn get_array(&self) -> Option<Cow<[u32]>> {
         if self.array_buf.is_some() {
-            return self.array_buf.as_ref();
+            return Some(Cow::from(self.array_buf.as_ref().unwrap()));
+        }
+
+        let siz = self.size();
+        if siz == 0 {
+            return None
         }
 
         let p = unsafe {
@@ -218,12 +251,10 @@ impl Datrie {
         if p.is_null() {
             None
         } else {
-            let siz = self.size();
             let arr: Vec<_> = (0..siz)
                 .map(|i| unsafe { *p.offset(i as isize) })
                 .collect();
-            self.array_buf = Some(arr);
-            self.array_buf.as_ref()
+            Some(Cow::from(arr))
         }
     }
 
@@ -341,5 +372,34 @@ mod tests {
         key_pos = 0;
         let s = da.traverse("o", &mut node_pos, &mut key_pos);
         assert!(s >= 0);
+    }
+
+    #[test]
+    fn test_get_set_array() {
+        let mut da = Datrie::new();
+        let keys = &["hello", "world", "he", "hell"];
+        let values = &[0, 1, 2, 3];
+        da.build(keys, Some(values))
+            .expect("build failed");
+
+        let a = da.get_array().unwrap();
+        let b: Vec<_> = a.iter().take(5).collect();
+        println!("{:?}", b);
+
+        if let Cow::Borrowed(_) = a {
+            panic!("Get array from fresh built datrie should be owned. ");
+        }
+
+        let x = a.into_owned().clone();
+
+        let mut da = Datrie::new();
+        da.set_array(x);
+        let idx = da.find("hello", None).unwrap_or(-1);
+        assert_eq!(idx, 0);
+
+        let a = da.get_array().unwrap();
+        if let Cow::Owned(_) = a {
+            panic!("Get array from datrie that initialized by set_array() should be borrowed. ");
+        }
     }
 }
